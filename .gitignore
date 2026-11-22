@@ -54,3 +54,6 @@ nosetests.xml
 
 # VSCode config
 .vscode
+
+# Zwischenspeicher des XYZGrid (wird beim Laden der Karten neu erzeugt)
+server/.cache/
