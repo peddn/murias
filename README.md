@@ -27,8 +27,24 @@ Karte anzeigen und prüfen:
 
     python -m world.wildlands.check world.nereid
 
+## Wetter
+
+Das Wetter wird aus Ort und Spielzeit berechnet (`world/wildlands/weather.py`),
+gespeichert wird nichts. Rauschfelder aus `opensimplex` werden mit festem Wind
+über die Karte geschoben. Die Stellschrauben stehen als `WeatherConfig` in
+`world/nereid/__init__.py`, die Sätze mit ihren Bedingungen in
+`world/nereid/sentences.py`.
+
+Wetterkarte über die Zeit ansehen:
+
+    python -m world.wildlands.weathermap world.nereid --start 0 --frames 4 --step 3
+
+Im Spiel: `wetter` für alle, `@wetter` zeigt Buildern die Rohwerte,
+`@wetter/vor <stunden>` spult die Wetterzeit vor, `@wetter/reset` zurück.
+
 ## Starten und testen
 
+    pip install -r requirements.txt
     evennia migrate
     evennia start
     evennia test --settings settings.py world.wildlands

@@ -27,6 +27,9 @@ BIOMES = (
     ),
     Biome(
         key="forest",
+        shelter=1,
+        open_sky=False,
+        dries=6,
         symbol="&",
         name="Wald",
         height=3,
@@ -48,6 +51,8 @@ BIOMES = (
     ),
     Biome(
         key="beach",
+        warmth=1.0,
+        dries=1,
         symbol="*",
         name="Strand",
         height=0,
@@ -66,6 +71,8 @@ BIOMES = (
     ),
     Biome(
         key="swamp",
+        moisture=0.12,
+        dries=0,
         symbol="=",
         name="Moor",
         height=1,
@@ -85,6 +92,7 @@ BIOMES = (
     ),
     Biome(
         key="rock",
+        dries=0,
         symbol="^",
         name="Fels",
         movement=CLIMB,
@@ -114,6 +122,8 @@ BIOMES = (
     ),
     Biome(
         key="lake",
+        moisture=0.05,
+        dries=0,
         symbol="~",
         name="See",
         movement=SWIM,

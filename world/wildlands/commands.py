@@ -10,6 +10,7 @@ from evennia.contrib.grid import wilderness
 from evennia.contrib.grid.extended_room.extended_room import CmdExtendedRoomLook
 
 from .rooms import WildlandsMapProvider, WildlandsRoom
+from .weather import HOUR, hour_of_day
 from .world import CLIMB, SWIM, WALK, get_world
 
 
@@ -169,6 +170,102 @@ class CmdEnterWild(MuxCommand):
             caller.msg("Das hat nicht geklappt.")
 
 
+class CmdWeather(MuxCommand):
+    """
+    Wetter ansehen
+
+    Usage:
+      wetter
+
+    Beschreibt das Wetter an deinem Standort.
+    """
+
+    key = "wetter"
+    locks = "cmd:all()"
+    help_category = "Allgemein"
+
+    def func(self):
+        location = self.caller.location
+        text = None
+        if isinstance(location, WildlandsRoom):
+            text = location.get_detail("wetter", looker=self.caller)
+        self.caller.msg(text or "Hier merkst du nichts vom Wetter.")
+
+
+class CmdWeatherAdmin(MuxCommand):
+    """
+    Wetterwerte ansehen und Wetterzeit verschieben (Builder)
+
+    Usage:
+      @wetter
+      @wetter/vor <stunden>
+      @wetter/reset
+
+    Ohne Schalter zeigt der Befehl die Rohwerte und Stufen des Wetters an
+    deinem Standort. Mit /vor wird die Wetterzeit der Welt um so viele
+    Spielstunden verschoben (auch negativ), mit /reset wieder auf die
+    Spielzeit gesetzt. Die Verschiebung betrifft nur Wetter, Tages- und
+    Jahreszeit der Wildnis, nicht die Spielzeit selbst.
+    """
+
+    key = "@wetter"
+    switch_options = ("vor", "reset")
+    locks = "cmd:perm(Builder)"
+    help_category = "Building"
+
+    def func(self):
+        caller = self.caller
+        location = caller.location
+        if not isinstance(location, WildlandsRoom):
+            caller.msg("Das geht nur in der Wildnis.")
+            return
+        world = location.world
+        if not world.weather_model:
+            caller.msg("Diese Welt hat kein Wetter.")
+            return
+
+        if "reset" in self.switches:
+            world.time_offset = 0.0
+        elif "vor" in self.switches:
+            try:
+                world.time_offset = world.time_offset + float(self.args) * HOUR
+            except ValueError:
+                caller.msg("Usage: @wetter/vor <stunden>")
+                return
+
+        t = world.now()
+        coordinates = location.coordinates
+        weather = world.get_weather(coordinates, t)
+        state = world.get_state(coordinates, t)
+        day = int(t // (24 * HOUR)) % 360 + 1
+        lines = [
+            f"|wWetter bei {coordinates}|n, Tag {day}, {hour_of_day(t):04.1f} Uhr"
+            f" ({state['jahreszeit']}, {state['tageszeit']}),"
+            f" Verschiebung {world.time_offset / HOUR:+.1f} h",
+            f"  Bewölkung {weather.cloudiness:.2f}  Feuchte {weather.humidity:.2f}"
+            f"  Druck {weather.pressure:.2f}  Wind {weather.wind_force:.2f}"
+            f"  Temperatur {weather.temperature:.1f}°",
+            "  "
+            + "  ".join(
+                f"{key}={state[key]}"
+                for key in (
+                    "himmel",
+                    "niederschlag",
+                    "wind",
+                    "temperatur",
+                    "nebel",
+                    "gewitter",
+                    "sicht",
+                    "boden",
+                    "trend",
+                )
+            ),
+        ]
+        caller.msg("\n".join(lines))
+        if self.switches:
+            caller.msg(caller.at_look(location))
+
+
 class WildlandsCmdSet(CmdSet):
     """Alle Befehle der Wildnis. In das Character-Cmdset einhängen."""
 
@@ -177,3 +274,5 @@ class WildlandsCmdSet(CmdSet):
         self.add(CmdClimb())
         self.add(CmdSwim())
         self.add(CmdEnterWild())
+        self.add(CmdWeather())
+        self.add(CmdWeatherAdmin())
