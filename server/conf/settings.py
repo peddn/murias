@@ -35,6 +35,16 @@ from evennia.settings_default import *
 SERVERNAME = "murias"
 
 
+# Meldet Wetterwechsel an Spieler in der Wildnis (siehe world/wildlands/scripts.py)
+GLOBAL_SCRIPTS = {
+    "wildlands_weather": {
+        "typeclass": "world.wildlands.scripts.WeatherWatch",
+        "interval": 30,
+        "persistent": True,
+        "desc": "Meldet Wetterwechsel in der Wildnis",
+    },
+}
+
 ######################################################################
 # Settings given in secret_settings.py override those in this file.
 ######################################################################

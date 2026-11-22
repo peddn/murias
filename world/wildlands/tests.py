@@ -5,13 +5,21 @@ Tests für die Wildnis-Mechanik, anhand der Testwelt Nereid.
 
 """
 
+import itertools
+import random
+from unittest import mock
+
 from evennia.contrib.grid import wilderness
 from evennia.utils.test_resources import BaseEvenniaCommandTest, BaseEvenniaTest
 
 from . import commands
 from .check import check_world
 from .rooms import WildlandsMapProvider, WildlandsRoom
-from .world import BLOCKED, CLIMB, SWIM, WALK, get_world
+from .noise import Field
+from .scripts import weather_messages
+from .sentences import S, SentenceBook
+from .weather import HOUR, YEAR, season, time_of_day
+from .world import BLOCKED, CLIMB, SWIM, WALK, WorldDefinition, get_world
 
 WORLD_PATH = "world.nereid"
 
@@ -26,6 +34,12 @@ SHORE = (14, 11)  # Wiese; östlich davon (15, 11) noch Wiese, dann See
 BRIDGE = (22, 12)
 FOREST = (30, 18)
 PLATEAU = (27, 16)  # Wald mit gezeichneter Höhe 4
+
+# Referenzwerte des Rauschens, siehe TestNoise
+REFERENCE = (0.7640841003178759, 0.46214568566664993, 0.23708281740360182)
+
+# feste Spielzeit für Tests: ein Sommernachmittag
+SUMMER_DAY = (190 * 24 + 15) * HOUR
 
 
 class TestWorld(BaseEvenniaTest):
@@ -56,8 +70,8 @@ class TestWorld(BaseEvenniaTest):
         self.assertEqual(self.world.get_movement(BRIDGE), WALK)
         # auf der Brücke gelten ihr Name und ihre Beschreibung, nicht die des Sees
         self.assertEqual(self.world.get_location_name(BRIDGE), "Spiegelsee (Brücke)")
-        self.assertNotIn("schwimmst", self.world.describe(BRIDGE))
-        self.assertNotIn("Wellen schlagen", self.world.describe(BRIDGE))
+        self.assertNotIn("schwimmst", self.world.describe(BRIDGE, t=SUMMER_DAY))
+        self.assertNotIn("Wellen schlagen dir ins", self.world.describe(BRIDGE, t=SUMMER_DAY))
 
     def test_required_movement(self):
         world = self.world
@@ -82,24 +96,34 @@ class TestWorld(BaseEvenniaTest):
         self.assertEqual(self.world.get_location_name(FOREST), "Düsterwald (Wald)")
 
     def test_describe_is_stable_and_varied(self):
-        first = self.world.describe(GRASS)
+        first = self.world.describe(GRASS, t=SUMMER_DAY)
         self.assertTrue(first)
-        self.assertEqual(first, self.world.describe(GRASS))
-        variants = {self.world.describe((x, 6)) for x in range(10, 30)}
+        self.assertEqual(first, self.world.describe(GRASS, t=SUMMER_DAY))
+        variants = {self.world.describe((x, 6), t=SUMMER_DAY) for x in range(10, 30)}
         self.assertGreater(len(variants), 1)
 
     def test_describe_surroundings(self):
-        text = self.world.describe(GRASS_BY_ROCK)
+        text = self.world.describe(GRASS_BY_ROCK, t=SUMMER_DAY)
         self.assertIn("Im Norden und Westen siehst du schroffen Fels.", text)
 
     def test_details(self):
-        details = self.world.get_details(FOREST)
+        details = self.world.get_details(FOREST, t=SUMMER_DAY)
         self.assertIn("bäume", details)
-        # das Biom überschreibt das überall geltende Detail
+        # im Wald sieht man den Himmel nicht: fester Text des Bioms
         self.assertIn("Kronen", details["himmel"])
-        self.assertIn("weiter Himmel", self.world.get_details(GRASS)["himmel"])
+        # auf der Wiese wird der Himmel aus dem Wetter berechnet
+        grass = self.world.get_details(GRASS, t=SUMMER_DAY)
+        self.assertEqual(
+            grass["himmel"],
+            " ".join(
+                self.world.describe_weather(
+                    GRASS, SUMMER_DAY, topics=("himmel", "niederschlag", "trend")
+                )
+            ),
+        )
+        self.assertIn("wetter", grass)
         # Überlagerung bringt eigene Details mit
-        self.assertIn("steg", self.world.get_details(BRIDGE))
+        self.assertIn("steg", self.world.get_details(BRIDGE, t=SUMMER_DAY))
 
 
 class TestWildlandsInGame(BaseEvenniaCommandTest):
@@ -109,6 +133,10 @@ class TestWildlandsInGame(BaseEvenniaCommandTest):
             name="nereid", mapprovider=WildlandsMapProvider(WORLD_PATH)
         )
         self.script = wilderness.WildernessScript.objects.get(db_key="nereid")
+        # feste Zeit, damit das Wetter während eines Tests nicht umschlägt
+        patcher = mock.patch.object(WorldDefinition, "now", return_value=SUMMER_DAY)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def enter(self, coordinates):
         self.assertTrue(
@@ -178,3 +206,207 @@ class TestWildlandsInGame(BaseEvenniaCommandTest):
     def test_blocked_field_has_no_exit(self):
         self.enter(ROCK_BY_CLIFF)
         self.call(commands.CmdClimb(), "norden", "In diese Richtung geht es nicht weiter.")
+
+    def test_weather_commands(self):
+        self.enter(GRASS)
+        world = self.char1.location.world
+        expected = " ".join(world.describe_weather(GRASS, SUMMER_DAY))
+        self.call(commands.CmdWeather(), "", expected)
+        self.call(commands.CmdWeatherAdmin(), "", "Wetter bei (14, 13), Tag 191, 15.0 Uhr")
+
+
+class TestNoise(BaseEvenniaTest):
+    def test_reference_values(self):
+        """
+        Wetter und Ressourcen hängen an den exakten Zahlen. Schlägt dieser Test
+        nach einem Update der Noise-Bibliothek fehl, hat sich die Welt verschoben.
+        """
+        field = Field(seed=4711, scale=40, octaves=3, warp=0.5)
+        self.assertAlmostEqual(field.at(0, 0, 0), REFERENCE[0], places=6)
+        self.assertAlmostEqual(field.at(12.5, 80.0, 3.2), REFERENCE[1], places=6)
+        self.assertAlmostEqual(field.at(-300.0, 41.0, 100.0), REFERENCE[2], places=6)
+
+    def test_range_and_smoothness(self):
+        field = Field(seed=1, scale=40, octaves=3, warp=0.5)
+        values = [field.at(x * 3.7, y * 2.9, 0.4) for x in range(30) for y in range(30)]
+        self.assertGreaterEqual(min(values), 0.0)
+        self.assertLessEqual(max(values), 1.0)
+        # der ganze Bereich wird genutzt
+        self.assertLess(min(values), 0.1)
+        self.assertGreater(max(values), 0.9)
+        # Nachbarfelder unterscheiden sich kaum
+        self.assertLess(abs(field.at(10, 10) - field.at(11, 10)), 0.15)
+
+
+class TestWeather(BaseEvenniaTest):
+    def setUp(self):
+        super().setUp()
+        self.world = get_world(WORLD_PATH)
+        rng = random.Random(7)
+        valid = [c for c in self.world.maps.iter_coordinates() if self.world.is_valid(c)]
+        self.samples = [(rng.choice(valid), rng.uniform(0, YEAR)) for _ in range(600)]
+
+    def test_calendar(self):
+        self.assertEqual(time_of_day(3 * HOUR), "nacht")
+        self.assertEqual(time_of_day(7 * HOUR), "morgen")
+        self.assertEqual(time_of_day(13 * HOUR), "tag")
+        self.assertEqual(time_of_day(20 * HOUR), "abend")
+        self.assertEqual(season(0), "winter")
+        self.assertEqual(season(SUMMER_DAY), "sommer")
+        self.assertEqual(season(100 * 24 * HOUR), "fruehling")
+        self.assertEqual(season(280 * 24 * HOUR), "herbst")
+
+    def test_is_a_pure_function(self):
+        for coordinates, t in self.samples[:20]:
+            self.assertEqual(
+                self.world.get_weather(coordinates, t), self.world.get_weather(coordinates, t)
+            )
+
+    def test_no_impossible_combinations(self):
+        seen = set()
+        for coordinates, t in self.samples:
+            weather = self.world.get_weather(coordinates, t)
+            seen.add(weather.precipitation)
+            if weather.precipitation != "kein":
+                self.assertIn(weather.sky, ("bedeckt", "duester"))
+                self.assertFalse(weather.fog)
+            if weather.is_snow:
+                self.assertLess(weather.temperature, 0.5)
+            if weather.is_wet:
+                self.assertGreaterEqual(weather.temperature, 0.5)
+            if weather.fog:
+                self.assertEqual(weather.wind, "still")
+            if weather.thunder:
+                self.assertEqual(weather.precipitation, "wolkenbruch")
+        # über ein Jahr kommt Regen wie Schnee vor
+        self.assertIn("regen", seen)
+        self.assertIn("schnee", seen)
+
+    def test_neighbours_have_similar_weather(self):
+        for coordinates, t in self.samples[:100]:
+            x, y = coordinates
+            here = self.world.weather_model.at((x, y), t)
+            there = self.world.weather_model.at((x + 1, y), t)
+            self.assertLess(abs(here.cloudiness - there.cloudiness), 0.2)
+
+    def test_height_and_season_change_temperature(self):
+        model = self.world.weather_model
+        low = model.at((20, 10), SUMMER_DAY, height=1).temperature
+        high = model.at((20, 10), SUMMER_DAY, height=8).temperature
+        self.assertGreater(low - high, 10)
+        winter = model.at((20, 10), 10 * 24 * HOUR + 15 * HOUR, height=1).temperature
+        self.assertGreater(low - winter, 8)
+
+    def test_shelter_reduces_wind(self):
+        model = self.world.weather_model
+        levels = ("still", "brise", "boeig", "sturm")
+        for coordinates, t in self.samples[:100]:
+            open_wind = levels.index(model.at(coordinates, t).wind)
+            sheltered = levels.index(model.at(coordinates, t, shelter=1).wind)
+            self.assertEqual(sheltered, max(0, open_wind - 1))
+
+    def test_state(self):
+        state = self.world.get_state(FOREST, SUMMER_DAY)
+        self.assertEqual(state["biom"], "forest")
+        self.assertEqual(state["tageszeit"], "tag")
+        self.assertEqual(state["jahreszeit"], "sommer")
+        self.assertEqual(state["sicht"], "verdeckt")
+        self.assertEqual(state["woher"], "Westen")
+        self.assertIn(state["boden"], ("trocken", "nass", "schnee"))
+        self.assertIn(state["trend"], ("aufzug", "abzug", "gleich"))
+
+    def test_ground_remembers_rain(self):
+        """Nach dem Regen ist der Boden noch eine Weile nass."""
+        found = False
+        for hours in range(0, 24 * 60):
+            t = SUMMER_DAY + hours * HOUR
+            now = self.world.get_weather(GRASS, t)
+            before = self.world.get_weather(GRASS, t - HOUR)
+            if now.precipitation == "kein" and before.is_wet:
+                self.assertEqual(self.world.get_state(GRASS, t)["boden"], "nass")
+                found = True
+                break
+        self.assertTrue(found, "in 60 Tagen hat es auf der Wiese nie geregnet")
+
+    def test_description_contains_weather(self):
+        text = self.world.describe(GRASS, t=SUMMER_DAY)
+        for sentence in self.world.describe_weather(GRASS, SUMMER_DAY):
+            self.assertIn(sentence, text)
+
+
+class TestSentences(BaseEvenniaTest):
+    def setUp(self):
+        super().setUp()
+        self.world = get_world(WORLD_PATH)
+        self.book = self.world.sentences
+
+    def test_most_specific_wins(self):
+        book = SentenceBook(
+            (
+                S("t", "allgemein"),
+                S("t", "regen", niederschlag="regen"),
+                S("t", "regen im wald", niederschlag="regen", biom="forest"),
+            )
+        )
+        first = lambda options, salt: options[0]  # noqa: E731
+        self.assertEqual(book.choose("t", {}, first), "allgemein")
+        self.assertEqual(book.choose("t", {"niederschlag": "regen"}, first), "regen")
+        self.assertEqual(
+            book.choose("t", {"niederschlag": "regen", "biom": "forest"}, first), "regen im wald"
+        )
+        self.assertEqual(book.choose("x", {}, first), "")
+
+    def test_placeholders(self):
+        book = SentenceBook((S("t", "Aus dem {woher} kommt {unbekannt}."),))
+        text = book.choose("t", {"woher": "Westen"}, lambda options, salt: options[0])
+        self.assertEqual(text, "Aus dem Westen kommt {unbekannt}.")
+
+    def test_every_precipitation_has_a_sentence(self):
+        """Für jede Kombination aus Niederschlag, Wind und Biom gibt es einen Satz."""
+        precipitation = ("niesel", "regen", "wolkenbruch", "schnee", "starkschnee")
+        wind = ("still", "brise", "boeig", "sturm")
+        biomes = [biome.key for biome in self.world.biomes.values()]
+        for combo in itertools.product(precipitation, wind, biomes, ("ja", "nein")):
+            state = dict(zip(("niederschlag", "wind", "biom", "gewitter"), combo))
+            self.assertTrue(self.book.candidates("niederschlag", state), state)
+
+    def test_wind_and_rain_never_contradict(self):
+        """Bei starkem Wind darf kein Satz von ruhigem Regen sprechen."""
+        calm_words = ("gleichmäßig", "senkrecht", "lautlos", "unablässig")
+        for precipitation in ("niesel", "regen", "wolkenbruch", "schnee", "starkschnee"):
+            for biome in self.world.biomes.values():
+                state = {
+                    "niederschlag": precipitation,
+                    "wind": "sturm",
+                    "biom": biome.key,
+                    "gewitter": "nein",
+                }
+                for text in self.book.candidates("niederschlag", state):
+                    for word in calm_words:
+                        self.assertNotIn(word, text, state)
+
+    def test_every_open_sky_has_a_sentence(self):
+        for sky, daytime in itertools.product(
+            ("klar", "locker", "bedeckt", "duester"), ("nacht", "morgen", "tag", "abend")
+        ):
+            state = {"himmel": sky, "tageszeit": daytime, "sicht": "frei"}
+            self.assertTrue(self.book.candidates("himmel", state), state)
+
+    def test_every_change_has_a_message(self):
+        levels = ("kein", "niesel", "regen", "wolkenbruch", "schnee", "starkschnee")
+        for old, new in itertools.permutations(levels, 2):
+            self.assertTrue(self.book.candidates("wechsel", {"von": old, "zu": new}), (old, new))
+
+    def test_weather_messages(self):
+        """Findet einen Regenbeginn und prüft die Meldung dazu."""
+        world = self.world
+        for hours in range(0, 24 * 60):
+            t = SUMMER_DAY + hours * HOUR
+            before = world.get_weather(GRASS, t)
+            after = world.get_weather(GRASS, t + HOUR)
+            if before.precipitation == "kein" and after.is_wet:
+                messages = weather_messages(world, GRASS, before, after, t)
+                self.assertTrue(any("egen" in message or "niesel" in message for message in messages))
+                self.assertEqual(weather_messages(world, GRASS, after, after, t), [])
+                return
+        self.fail("in 60 Tagen hat es auf der Wiese nie zu regnen begonnen")
