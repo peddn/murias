@@ -30,7 +30,17 @@ def at_server_start():
     This is called every time the server starts up, regardless of
     how it was shut down.
     """
-    pass
+    from django.conf import settings
+    from evennia.contrib.grid import wilderness
+
+    from world.wildlands.places import sync_portals
+    from world.wildlands.rooms import WildlandsMapProvider
+
+    # Wildnis jeder Welt anlegen (geschieht nur beim ersten Mal) und die
+    # Ausgänge der Orte zurück in die Wildnis abgleichen.
+    for name, world_path in getattr(settings, "WILDLANDS_WORLDS", {}).items():
+        wilderness.create_wilderness(name=name, mapprovider=WildlandsMapProvider(world_path))
+        sync_portals(world_path, name)
 
 
 def at_server_stop():

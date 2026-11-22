@@ -156,11 +156,15 @@ class CmdEnterWild(MuxCommand):
                 (
                     coords
                     for coords in world.maps.iter_coordinates()
-                    if world.get_movement(coords) == WALK
+                    if world.get_movement(coords) == WALK and not world.get_portal(coords)
                 ),
                 None,
             )
-        if coordinates is None or not world.is_valid(coordinates):
+        if (
+            coordinates is None
+            or not world.is_valid(coordinates)
+            or world.get_portal(coordinates)
+        ):
             caller.msg(f"Das Feld {coordinates} kann man nicht betreten.")
             return
 
@@ -168,6 +172,12 @@ class CmdEnterWild(MuxCommand):
             caller.msg(caller.at_look(caller.location))
         else:
             caller.msg("Das hat nicht geklappt.")
+
+
+def _weather_site(location):
+    """`(welt, standort)` eines Raumes mit Wetter, sonst None."""
+    getter = getattr(location, "get_weather_site", None)
+    return getter() if getter else None
 
 
 class CmdWeather(MuxCommand):
@@ -187,8 +197,10 @@ class CmdWeather(MuxCommand):
     def func(self):
         location = self.caller.location
         text = None
-        if isinstance(location, WildlandsRoom):
-            text = location.get_detail("wetter", looker=self.caller)
+        found = _weather_site(location)
+        if found:
+            world, site = found
+            text = world.weather_details(site, world.now()).get("wetter")
         self.caller.msg(text or "Hier merkst du nichts vom Wetter.")
 
 
@@ -216,13 +228,11 @@ class CmdWeatherAdmin(MuxCommand):
     def func(self):
         caller = self.caller
         location = caller.location
-        if not isinstance(location, WildlandsRoom):
-            caller.msg("Das geht nur in der Wildnis.")
+        found = _weather_site(location)
+        if not found:
+            caller.msg("Hier gibt es kein Wetter.")
             return
-        world = location.world
-        if not world.weather_model:
-            caller.msg("Diese Welt hat kein Wetter.")
-            return
+        world, site = found
 
         if "reset" in self.switches:
             world.time_offset = 0.0
@@ -234,12 +244,13 @@ class CmdWeatherAdmin(MuxCommand):
                 return
 
         t = world.now()
-        coordinates = location.coordinates
-        weather = world.get_weather(coordinates, t)
-        state = world.get_state(coordinates, t)
+        coordinates = site.coordinates
+        weather = world.site_weather(site, t)
+        state = world.site_state(site, t)
         day = int(t // (24 * HOUR)) % 360 + 1
         lines = [
-            f"|wWetter bei {coordinates}|n, Tag {day}, {hour_of_day(t):04.1f} Uhr"
+            f"|wWetter bei {coordinates}|n ({site.biom}, Höhe {site.height}),"
+            f" Tag {day}, {hour_of_day(t):04.1f} Uhr"
             f" ({state['jahreszeit']}, {state['tageszeit']}),"
             f" Verschiebung {world.time_offset / HOUR:+.1f} h",
             f"  Bewölkung {weather.cloudiness:.2f}  Feuchte {weather.humidity:.2f}"

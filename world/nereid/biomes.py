@@ -142,6 +142,19 @@ BIOMES = (
     ),
 )
 
+# Orte: Mauern sperren, Tore sind Zugänge (siehe portals.py)
+BIOMES += (
+    Biome(
+        key="wall",
+        symbol="x",
+        name="Mauer",
+        movement=BLOCKED,
+        height=2,
+        afar="eine hohe Stadtmauer",
+    ),
+    Biome(key="gate", symbol="o", name="Tor", height=2, is_portal=True),
+)
+
 REGIONS = (
     Region(
         key="grauzinnen",

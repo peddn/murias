@@ -106,6 +106,12 @@ class WildlandsRoom(WildernessRoom):
     def get_display_desc(self, looker, **kwargs):
         return self.world.describe(self.coordinates, looker=looker)
 
+    def get_weather_site(self):
+        """`(welt, standort)` für Wetterbefehle und -meldungen, oder None."""
+        world = self.world
+        site = world.site_at(self.coordinates)
+        return (world, site) if site and world.weather_model else None
+
     def get_display_exits(self, looker, **kwargs):
         order = list(DIRECTIONS)
         exits = self.filter_visible(self.contents_get(content_type="exit"), looker, **kwargs)
@@ -149,12 +155,57 @@ class WildlandsExit(WildernessExit):
 
     def get_display_name(self, looker=None, **kwargs):
         name = DIRECTIONS.get(self.key, ((), self.key))[1]
-        # Hinweis, wenn dieser Schritt Klettern oder Schwimmen verlangt
+        # Hinweis, wenn dort ein Zugang liegt oder der Schritt Klettern oder
+        # Schwimmen verlangt
         try:
-            hint = MOVEMENT_TEXT[self.required_movement(looker)][2]
+            portal = self.get_portal(looker)
+            if portal:
+                # den Namen nur zeigen, wenn man von hier aus hineinkommt
+                hint = portal.name if self.key in portal.targets else ""
+            else:
+                hint = MOVEMENT_TEXT[self.required_movement(looker)][2]
         except (AttributeError, KeyError, TypeError):
             hint = ""
         return f"{name} ({hint})" if hint else name
+
+    def get_portal(self, traversing_object):
+        """Zugang auf dem Feld, zu dem dieser Ausgang führt, oder None."""
+        wilderness = self.wilderness
+        start = wilderness.db.itemcoordinates[traversing_object]
+        return wilderness.mapprovider.world.get_portal(get_new_coordinates(start, self.key))
+
+    def enter_portal(self, traversing_object, portal):
+        """
+        Führt das Objekt durch einen Zugang aus der Wildnis in den Zielraum.
+
+        Returns:
+            bool: True, wenn es hindurchgegangen ist.
+
+        """
+        from .places import find_place_room
+
+        target = portal.targets.get(self.key)
+        if not target or (traversing_object.ndb.wild_move_mode or WALK) != WALK:
+            traversing_object.msg(portal.refuse)
+            return False
+        room = find_place_room(target)
+        if not room:
+            traversing_object.msg("Der Zugang ist versperrt.")
+            return False
+        if not traversing_object.at_pre_move(room):
+            return False
+        name = traversing_object.get_display_name(None)
+        origin = traversing_object.location
+        origin.msg_contents(
+            f"{name} geht nach {DIRECTIONS[self.key][1]} durch das {portal.name}.",
+            exclude=[traversing_object],
+        )
+        if not traversing_object.move_to(room, quiet=True, move_type="traverse"):
+            return False
+        room.msg_contents(
+            f"{name} kommt durch das {portal.name} herein.", exclude=[traversing_object]
+        )
+        return True
 
     def required_movement(self, traversing_object):
         """Fortbewegungsart, die dieser Ausgang für das Objekt verlangt."""
@@ -183,6 +234,10 @@ class WildlandsExit(WildernessExit):
         wilderness = self.wilderness
         current_coordinates = wilderness.db.itemcoordinates[traversing_object]
         new_coordinates = get_new_coordinates(current_coordinates, self.key)
+
+        portal = wilderness.mapprovider.world.get_portal(new_coordinates)
+        if portal:
+            return self.enter_portal(traversing_object, portal)
 
         if not self.at_traverse_coordinates(
             traversing_object, current_coordinates, new_coordinates

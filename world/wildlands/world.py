@@ -26,6 +26,18 @@ HEIGHT_BANDS = ((2, "tief"), (5, "mittel"), (7, "hoch"), (9, "alpin"))
 # stehen. "nebel" steht am Ende und ersetzt die Sätze über Nachbarfelder.
 WEATHER_TOPICS = ("himmel", "niederschlag", "wind", "temperatur", "boden", "trend")
 
+# Schritt (dx, dy) je Richtung, mit den Schlüsseln der Ausgänge
+STEPS = {
+    "north": (0, 1),
+    "northeast": (1, 1),
+    "east": (1, 0),
+    "southeast": (1, -1),
+    "south": (0, -1),
+    "southwest": (-1, -1),
+    "west": (-1, 0),
+    "northwest": (-1, 1),
+}
+
 # (dx, dy) der vier Hauptrichtungen, mit deutschem Namen
 CARDINALS = (
     ((0, 1), "Norden"),
@@ -33,6 +45,68 @@ CARDINALS = (
     ((0, -1), "Süden"),
     ((-1, 0), "Westen"),
 )
+
+
+def height_band(height):
+    """Name des Höhenbandes zu einem Höhenlevel."""
+    for upper, band in HEIGHT_BANDS:
+        if height <= upper:
+            return band
+    return HEIGHT_BANDS[-1][1]
+
+
+@dataclass(frozen=True)
+class Site:
+    """
+    Ein Standort, für den Wetter und Sätze berechnet werden.
+
+    Für ein Kartenfeld entsteht er aus Biom und Höhe (`site_at`). Für ein
+    Gebiet aus normalen Räumen, etwa eine Stadt, wird er von Hand festgelegt.
+
+    Attributes:
+        coordinates: Stelle im Wetterfeld.
+        biom: Schlüssel für die Satzauswahl.
+        height: Höhenlevel 0-9.
+        moisture, warmth, shelter, open_sky, dries: wie bei `Biome`.
+
+    """
+
+    coordinates: tuple
+    biom: str
+    height: int = 2
+    moisture: float = 0.0
+    warmth: float = 0.0
+    shelter: int = 0
+    open_sky: bool = True
+    dries: int = 3
+    bewegung: str = ""
+    ueberlagerung: str = ""
+    region: str = ""
+
+
+@dataclass(frozen=True)
+class Portal:
+    """
+    Ein Zugang von der Wildnis in ein Gebiet aus normalen Räumen, z.B. ein
+    Stadttor. Wer auf das Feld läuft, landet statt dessen im Zielraum.
+
+    Attributes:
+        coordinates: Feld der Wildnis, auf dem der Zugang liegt.
+        name: Anzeigename, z.B. "Nordtor". Steht am Ausgang des Nachbarfeldes.
+        targets: Wohin der Zugang führt, je nach Bewegungsrichtung:
+            `{"south": (x, y, "kartenname")}` bedeutet: wer nach Süden auf
+            das Feld läuft (also von Norden kommt), landet in diesem Raum.
+            Aus jeder anderen Richtung ist der Zugang verschlossen.
+        afar: Wie der Zugang vom Nachbarfeld aus aussieht, im Akkusativ.
+        refuse: Meldung, wenn man aus einer falschen Richtung kommt.
+
+    """
+
+    coordinates: tuple
+    name: str
+    targets: dict = field(default_factory=dict)
+    afar: str = ""
+    refuse: str = "Von hier aus kommst du dort nicht hinein."
 
 
 @dataclass(frozen=True)
@@ -55,6 +129,8 @@ class Biome:
         open_sky: False, wenn man den Himmel hier kaum sieht (dichter Wald).
         dries: Stunden, die der Boden nach Regen nass bleibt. 0 = der Boden
             spielt hier keine Rolle (Wasser, nackter Fels).
+        is_portal: True für Felder, auf denen ein Zugang liegen muss (Tor).
+            Das Prüfskript meldet solche Felder ohne Eintrag in `portals`.
         descs: Varianten der Grundbeschreibung.
         details: Mit `look <name>` ansehbare Details, `{"name": "Text"}`.
             Mehrere Namen für einen Text mit `;` trennen.
@@ -72,6 +148,7 @@ class Biome:
     shelter: int = 0
     open_sky: bool = True
     dries: int = 3
+    is_portal: bool = False
     descs: tuple = ()
     details: dict = field(default_factory=dict)
 
@@ -131,6 +208,7 @@ class WorldDefinition:
         weather (WeatherConfig): Stellschrauben des Wetters. Ohne sie gibt es
             kein Wetter.
         sentences (SentenceBook): Sätze für Wetter und Umwelt.
+        portals (iterable): Zugänge in Gebiete aus normalen Räumen.
 
     """
 
@@ -147,6 +225,7 @@ class WorldDefinition:
         details=None,
         weather=None,
         sentences=None,
+        portals=(),
     ):
         self.name = name
         self.map_directory = map_directory
@@ -155,6 +234,7 @@ class WorldDefinition:
         self.regions = {region.symbol: region for region in regions}
         self.overlays = {overlay.symbol: overlay for overlay in overlays}
         self.details = details or {}
+        self.portals = {tuple(portal.coordinates): portal for portal in portals}
         self.weather_config = weather
         self.sentences = sentences
         self._maps = None
@@ -209,30 +289,61 @@ class WorldDefinition:
             self._weather_model = WeatherModel(self.weather_config, self.seed, self.maps.height)
         return self._weather_model
 
+    def site_at(self, coordinates):
+        """
+        Der Standort zu einem Kartenfeld, oder None, wenn es nicht existiert.
+
+        """
+        biome = self.get_biome(coordinates)
+        if not biome:
+            return None
+        overlay = self.get_overlay(coordinates)
+        region = self.get_region(coordinates)
+        return Site(
+            coordinates=tuple(coordinates),
+            biom=biome.key,
+            height=self.get_height(coordinates),
+            moisture=biome.moisture,
+            warmth=biome.warmth,
+            shelter=biome.shelter,
+            open_sky=biome.open_sky,
+            dries=biome.dries,
+            bewegung=self.get_movement(coordinates),
+            ueberlagerung=overlay.key if overlay else "",
+            region=region.key if region else "",
+        )
+
+    def site_weather(self, site, t):
+        """Wetter an einem Standort, wie es dort gemessen würde."""
+        if not site or not self.weather_model:
+            return None
+        return self.weather_model.at(
+            site.coordinates,
+            t,
+            height=site.height,
+            moisture=site.moisture,
+            warmth=site.warmth,
+            shelter=site.shelter,
+        )
+
     def get_weather(self, coordinates, t):
         """
-        Wetter an einer Koordinate, wie es dort gemessen würde.
+        Wetter auf einem Kartenfeld.
 
         Returns:
             Weather or None: None, wenn die Welt kein Wetter hat oder das Feld
             nicht existiert.
 
         """
-        biome = self.get_biome(coordinates)
-        if not biome or not self.weather_model:
-            return None
-        return self.weather_model.at(
-            coordinates,
-            t,
-            height=self.get_height(coordinates),
-            moisture=biome.moisture,
-            warmth=biome.warmth,
-            shelter=biome.shelter,
-        )
+        return self.site_weather(self.site_at(coordinates), t)
 
     def get_state(self, coordinates, t):
+        """Zustand eines Kartenfeldes, siehe `site_state`."""
+        return self.site_state(self.site_at(coordinates), t)
+
+    def site_state(self, site, t):
         """
-        Alles, was Sätze über ein Feld wissen dürfen, als Dict.
+        Alles, was Sätze über einen Standort wissen dürfen, als Dict.
 
         Schlüssel: biom, band, bewegung, ueberlagerung, region, tageszeit,
         jahreszeit und, falls die Welt Wetter hat: himmel, niederschlag, wind,
@@ -240,19 +351,16 @@ class WorldDefinition:
         (trocken, nass, schnee), trend (aufzug, abzug, gleich), woher.
 
         """
-        biome = self.get_biome(coordinates)
-        overlay = self.get_overlay(coordinates)
-        region = self.get_region(coordinates)
         state = {
-            "biom": biome.key if biome else "",
-            "band": self.get_height_band(coordinates),
-            "bewegung": self.get_movement(coordinates),
-            "ueberlagerung": overlay.key if overlay else "",
-            "region": region.key if region else "",
+            "biom": site.biom if site else "",
+            "band": height_band(site.height) if site else "tief",
+            "bewegung": site.bewegung if site else "",
+            "ueberlagerung": site.ueberlagerung if site else "",
+            "region": site.region if site else "",
             "tageszeit": time_of_day(t),
             "jahreszeit": season(t),
         }
-        weather = self.get_weather(coordinates, t)
+        weather = self.site_weather(site, t)
         if not weather:
             return state
         state.update(weather.as_state())
@@ -260,32 +368,30 @@ class WorldDefinition:
         if weather.fog:
             state["sicht"] = "nebel"
         else:
-            state["sicht"] = "frei" if biome.open_sky else "verdeckt"
+            state["sicht"] = "frei" if site.open_sky else "verdeckt"
         state["woher"] = self.weather_model.wind_origin
 
         # Gedächtnis: Das Wetter ist eine Funktion der Zeit, also lässt sich
         # die Vergangenheit einfach noch einmal abfragen.
         state["boden"] = "trocken"
-        if biome.dries:
+        if site.dries:
             if weather.is_snow or (
                 weather.temperature < 1.0
-                and any(
-                    self.get_weather(coordinates, t - hours * HOUR).is_snow for hours in (2, 5)
-                )
+                and any(self.site_weather(site, t - hours * HOUR).is_snow for hours in (2, 5))
             ):
                 state["boden"] = "schnee"
             elif weather.is_wet:
                 state["boden"] = "nass"
             else:
                 for hours in (1, 3, 6, 12):
-                    if hours > biome.dries:
+                    if hours > site.dries:
                         break
-                    if self.get_weather(coordinates, t - hours * HOUR).is_wet:
+                    if self.site_weather(site, t - hours * HOUR).is_wet:
                         state["boden"] = "nass"
                         break
 
         # Trend: Was in zwei Stunden hier ist, steht jetzt windaufwärts.
-        soon = self.get_weather(coordinates, t + 2 * HOUR)
+        soon = self.site_weather(site, t + 2 * HOUR)
         now_dry = weather.precipitation == "kein"
         soon_dry = soon.precipitation == "kein"
         if now_dry and not soon_dry:
@@ -318,11 +424,11 @@ class WorldDefinition:
 
     def get_height_band(self, coordinates):
         """Name des Höhenbandes ("tief", "mittel", "hoch", "alpin")."""
-        height = self.get_height(coordinates)
-        for upper, band in HEIGHT_BANDS:
-            if height <= upper:
-                return band
-        return HEIGHT_BANDS[-1][1]
+        return height_band(self.get_height(coordinates))
+
+    def get_portal(self, coordinates):
+        """Zugang auf diesem Feld, oder None."""
+        return self.portals.get(tuple(coordinates))
 
     def get_movement(self, coordinates):
         """Fortbewegungsart, die dieses Feld verlangt."""
@@ -368,7 +474,7 @@ class WorldDefinition:
         value = zlib.crc32(f"{self.seed}:{x}:{y}:{salt}".encode())
         return options[value % len(options)]
 
-    def describe_weather(self, coordinates, t, topics=None):
+    def describe_weather(self, coordinates, t, topics=None, site=None):
         """
         Sätze über Wetter und Umwelt an einer Koordinate.
 
@@ -378,6 +484,7 @@ class WorldDefinition:
         Args:
             topics (iterable): Themen in der gewünschten Reihenfolge.
                 Standard: `WEATHER_TOPICS`.
+            site (Site): Standort, falls er nicht vom Kartenfeld kommt.
 
         Returns:
             list: Die Sätze, ohne leere.
@@ -385,7 +492,7 @@ class WorldDefinition:
         """
         if not self.sentences or not self.weather_model:
             return []
-        state = self.get_state(coordinates, t)
+        state = self.site_state(site or self.site_at(coordinates), t)
         hour = int(t // HOUR)
 
         def pick(options, salt):
@@ -419,26 +526,39 @@ class WorldDefinition:
             return f"{region.name} ({name})"
         return name
 
+    def weather_details(self, site, t):
+        """
+        Die Details "wetter" und, wo man ihn sieht, "himmel" für einen
+        Standort. Sie werden aus den Wettersätzen gebildet.
+
+        """
+        details = {}
+        if not site or not self.sentences or not self.weather_model:
+            return details
+        weather = " ".join(self.describe_weather(site.coordinates, t, site=site))
+        if weather:
+            details["wetter"] = weather
+        sky = " ".join(
+            self.describe_weather(
+                site.coordinates, t, topics=("himmel", "niederschlag", "trend"), site=site
+            )
+        )
+        if sky and site.open_sky:
+            details["himmel"] = sky
+        return details
+
     def get_details(self, coordinates, t=None):
         """
         Alle Details dieses Feldes. Speziellere überschreiben allgemeinere.
 
-        Mit Wetter kommen "wetter" und, wo man ihn sieht, "himmel" dazu. Sie
-        werden aus den Wettersätzen gebildet.
+        Mit Wetter kommen "wetter" und, wo man ihn sieht, "himmel" dazu.
 
         """
         details = expand_details(self.details)
         biome = self.get_biome(coordinates)
-        if biome and self.sentences and self.weather_model:
+        if biome and self.weather_model:
             t = self.now() if t is None else t
-            weather = " ".join(self.describe_weather(coordinates, t))
-            if weather:
-                details["wetter"] = weather
-            sky = " ".join(
-                self.describe_weather(coordinates, t, topics=("himmel", "niederschlag", "trend"))
-            )
-            if sky and biome.open_sky:
-                details["himmel"] = sky
+            details.update(self.weather_details(self.site_at(coordinates), t))
         for source in (biome, self.get_region(coordinates), self.get_overlay(coordinates)):
             if source:
                 source_details = expand_details(source.details)
@@ -454,6 +574,10 @@ class WorldDefinition:
         seen = {}
         x, y = coordinates
         for (dx, dy), direction in CARDINALS:
+            portal = self.get_portal((x + dx, y + dy))
+            if portal and portal.afar:
+                seen.setdefault(portal.afar, []).append(direction)
+                continue
             neighbor = self.get_biome((x + dx, y + dy))
             if neighbor and neighbor is not here and neighbor.afar:
                 seen.setdefault(neighbor.afar, []).append(direction)
@@ -518,11 +642,14 @@ __all__ = (
     "BLOCKED",
     "CLIMB",
     "EMPTY",
+    "STEPS",
     "SWIM",
     "WALK",
     "Biome",
     "Overlay",
+    "Portal",
     "Region",
+    "Site",
     "WorldDefinition",
     "get_world",
 )

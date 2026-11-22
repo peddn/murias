@@ -16,6 +16,7 @@ from . import commands
 from .check import check_world
 from .rooms import WildlandsMapProvider, WildlandsRoom
 from .noise import Field
+from .places import GateExit, PlaceRoom, find_place_room, sync_portals
 from .scripts import weather_messages
 from .sentences import S, SentenceBook
 from .weather import HOUR, YEAR, season, time_of_day
@@ -212,7 +213,7 @@ class TestWildlandsInGame(BaseEvenniaCommandTest):
         world = self.char1.location.world
         expected = " ".join(world.describe_weather(GRASS, SUMMER_DAY))
         self.call(commands.CmdWeather(), "", expected)
-        self.call(commands.CmdWeatherAdmin(), "", "Wetter bei (14, 13), Tag 191, 15.0 Uhr")
+        self.call(commands.CmdWeatherAdmin(), "", "Wetter bei (14, 13) (grass, Höhe 2), Tag 191, 15.0 Uhr")
 
 
 class TestNoise(BaseEvenniaTest):
@@ -405,8 +406,162 @@ class TestSentences(BaseEvenniaTest):
             before = world.get_weather(GRASS, t)
             after = world.get_weather(GRASS, t + HOUR)
             if before.precipitation == "kein" and after.is_wet:
-                messages = weather_messages(world, GRASS, before, after, t)
+                site = world.site_at(GRASS)
+                messages = weather_messages(world, site, before, after, t)
                 self.assertTrue(any("egen" in message or "niesel" in message for message in messages))
-                self.assertEqual(weather_messages(world, GRASS, after, after, t), [])
+                self.assertEqual(weather_messages(world, site, after, after, t), [])
                 return
         self.fail("in 60 Tagen hat es auf der Wiese nie zu regnen begonnen")
+
+
+class TestPlaces(BaseEvenniaCommandTest):
+    """Orte aus normalen Räumen und ihre Zugänge, anhand von Furtheim und dem Wachturm."""
+
+    def setUp(self):
+        super().setUp()
+        from evennia.contrib.grid.xyzgrid.xyzgrid import get_xyzgrid
+
+        self.grid = get_xyzgrid()
+        # über den Modulpfad laden, wie es `evennia xyzgrid add` tut
+        self.grid.add_maps(*self.grid.maps_from_module("world.nereid.places"))
+        self.grid.reload()
+        self.grid.spawn()
+        wilderness.create_wilderness(
+            name="nereid", mapprovider=WildlandsMapProvider(WORLD_PATH)
+        )
+        self.script = wilderness.WildernessScript.objects.get(db_key="nereid")
+        self.problems = sync_portals(WORLD_PATH, "nereid")
+        self.world = get_world(WORLD_PATH)
+        self.set_time(SUMMER_DAY)
+
+    def set_time(self, t):
+        patcher = mock.patch.object(WorldDefinition, "now", return_value=t)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def place(self, x, y, z="furtheim"):
+        return find_place_room((x, y, z))
+
+    def enter(self, coordinates):
+        self.assertTrue(
+            wilderness.enter_wilderness(self.char1, coordinates=coordinates, name="nereid")
+        )
+
+    def wild_exit(self, key):
+        return [e for e in self.char1.location.exits if e.key == key][0]
+
+    def test_rooms_combine_both_contribs(self):
+        market = self.place(2, 2)
+        self.assertIsInstance(market, PlaceRoom)
+        self.assertEqual(market.xyz, (2, 2, "furtheim"))
+        self.assertEqual(market.get_detail("brunnen"), "Ein achteckiges Becken aus grauem Stein.")
+        self.assertEqual(self.problems, [])
+
+    def test_indoor_and_outdoor(self):
+        market = self.place(2, 2)
+        smithy = self.place(1, 3)
+        self.assertTrue(market.is_outdoor)
+        self.assertFalse(smithy.is_outdoor)
+        self.assertIsNone(smithy.get_site())
+        self.assertIsNone(smithy.get_weather_site())
+        self.assertIsNone(smithy.get_detail("wetter"))
+        # drinnen bleibt die Beschreibung, wie sie geschrieben wurde
+        self.assertTrue(smithy.get_display_desc(self.char1).endswith("Zangen und Hämmer."))
+
+    def test_site_comes_from_area_settings(self):
+        site = self.place(2, 2).get_site()
+        self.assertEqual(site.coordinates, (18, 5))
+        self.assertEqual(site.biom, "platz")
+        self.assertEqual(site.height, 2)
+        self.assertEqual(self.place(2, 3).get_site().biom, "strasse")
+        garden = self.place(3, 1).get_site()
+        self.assertEqual((garden.biom, garden.shelter), ("garten", 1))
+        tower = self.place(0, 0, "wachturm").get_site()
+        self.assertEqual((tower.coordinates, tower.height, tower.biom), ((42, 15), 3, "hof"))
+
+    def test_same_weather_everywhere_outdoors(self):
+        first = self.world.site_weather(self.place(2, 3).get_site(), SUMMER_DAY)
+        second = self.world.site_weather(self.place(1, 2).get_site(), SUMMER_DAY)
+        self.assertEqual(first, second)
+        desc = self.place(1, 2).get_display_desc(self.char1)
+        for sentence in self.world.describe_weather(
+            (18, 5), SUMMER_DAY, site=self.place(1, 2).get_site()
+        ):
+            self.assertIn(sentence, desc)
+
+    def test_calendar_and_states(self):
+        market = self.place(2, 2)
+        self.assertEqual(market.get_season(), "summer")
+        self.assertEqual(market.get_time_of_day(), "afternoon")
+        states = market.room_states
+        self.assertIn("sommer", states)
+        self.assertIn("tag", states)
+        state = self.world.site_state(market.get_site(), SUMMER_DAY)
+        self.assertIn(state["himmel"], states)
+        self.assertIn(state["temperatur"], states)
+        # drinnen gibt es Tages- und Jahreszeit, aber kein Wetter
+        self.assertEqual(self.place(1, 3).room_states, ["sommer", "tag"])
+
+    def test_state_function_in_description(self):
+        market = self.place(2, 2)
+        self.assertNotIn("Die Stände sind abgebaut", market.get_display_desc(self.char1))
+        self.assertNotIn("  ", market.get_display_desc(self.char1))
+        self.set_time(SUMMER_DAY + 10 * HOUR)  # ein Uhr nachts
+        self.assertIn("Die Stände sind abgebaut", market.get_display_desc(self.char1))
+
+    def test_enter_through_gate(self):
+        self.enter((18, 8))
+        south = self.wild_exit("south")
+        self.assertEqual(south.get_display_name(self.char1), "Süden (Nordtor)")
+        self.assertTrue(south.at_traverse(self.char1, south.destination))
+        self.assertEqual(self.char1.location, self.place(2, 4))
+        self.assertNotIn(self.char1, self.script.db.itemcoordinates)
+
+    def test_wall_refuses_diagonal_entry(self):
+        self.enter((17, 8))
+        southeast = self.wild_exit("southeast")
+        # der Name des Tores steht nur dort, wo man hineinkommt
+        self.assertEqual(southeast.get_display_name(self.char1), "Südosten")
+        self.assertFalse(southeast.at_traverse(self.char1, southeast.destination))
+        self.assertEqual(self.script.db.itemcoordinates[self.char1], (17, 8))
+        self.assertEqual([e for e in self.char1.location.exits if e.key == "south"][0].key, "south")
+
+    def test_climbing_through_a_gate_is_refused(self):
+        self.enter((18, 8))
+        self.call(commands.CmdClimb(), "s", "Dorthin musst du nicht klettern.")
+        self.assertEqual(self.script.db.itemcoordinates[self.char1], (18, 8))
+
+    def test_leave_through_gate(self):
+        gate_room = self.place(2, 4)
+        self.char1.location = gate_room
+        north = [e for e in gate_room.exits if e.key == "north"][0]
+        self.assertIsInstance(north, GateExit)
+        self.assertEqual(north.get_display_name(self.char1), "Norden (hinaus)")
+        self.assertTrue(north.at_traverse(self.char1, north.destination))
+        self.assertEqual(self.script.db.itemcoordinates[self.char1], (18, 8))
+
+    def test_single_field_place_depends_on_direction(self):
+        self.enter((41, 15))
+        east = self.wild_exit("east")
+        self.assertFalse(east.at_traverse(self.char1, east.destination))
+        self.assertEqual(self.script.db.itemcoordinates[self.char1], (41, 15))
+        self.script.move_obj(self.char1, (42, 14))
+        north = self.wild_exit("north")
+        self.assertTrue(north.at_traverse(self.char1, north.destination))
+        self.assertEqual(self.char1.location, self.place(0, 0, "wachturm"))
+
+    def test_nobody_can_be_placed_on_a_gate(self):
+        self.call(commands.CmdEnterWild(), "nereid = 18,7", "Das Feld (18, 7) kann man nicht")
+
+    def test_sync_portals_is_repeatable(self):
+        before = GateExit.objects.count()
+        self.assertEqual(before, 5)
+        sync_portals(WORLD_PATH, "nereid")
+        self.assertEqual(GateExit.objects.count(), before)
+
+    def test_weather_command_in_places(self):
+        self.char1.location = self.place(2, 2)
+        expected = self.world.weather_details(self.place(2, 2).get_site(), SUMMER_DAY)["wetter"]
+        self.call(commands.CmdWeather(), "", expected)
+        self.char1.location = self.place(1, 3)
+        self.call(commands.CmdWeather(), "", "Hier merkst du nichts vom Wetter.")

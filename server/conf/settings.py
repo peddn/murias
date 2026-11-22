@@ -35,6 +35,16 @@ from evennia.settings_default import *
 SERVERNAME = "murias"
 
 
+# Orte aus normalen Räumen liegen auf Karten des XYZGrid-Contribs.
+# Verwaltung im Terminal: evennia xyzgrid help
+EXTRA_LAUNCHER_COMMANDS["xyzgrid"] = "evennia.contrib.grid.xyzgrid.launchcmd.xyzcommand"
+PROTOTYPE_MODULES += ["evennia.contrib.grid.xyzgrid.prototypes"]
+
+# Welten der Wildnis: Name der Wildnis -> Python-Pfad der Weltdefinition.
+# Beim Serverstart wird jede Wildnis angelegt, und die Ausgänge der Orte
+# zurück in die Wildnis werden abgeglichen (siehe at_server_startstop.py).
+WILDLANDS_WORLDS = {"nereid": "world.nereid"}
+
 # Meldet Wetterwechsel an Spieler in der Wildnis (siehe world/wildlands/scripts.py)
 GLOBAL_SCRIPTS = {
     "wildlands_weather": {
