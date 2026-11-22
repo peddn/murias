@@ -42,10 +42,33 @@ Wetterkarte über die Zeit ansehen:
 Im Spiel: `wetter` für alle, `@wetter` zeigt Buildern die Rohwerte,
 `@wetter/vor <stunden>` spult die Wetterzeit vor, `@wetter/reset` zurück.
 
+## Orte
+
+Städte, Höhlen und Dungeons sind Gebiete aus normalen Räumen auf Karten des
+Contribs `grid/xyzgrid`. Die Räume (`world/wildlands/places.py`) verbinden
+XYZRoom mit ExtendedRoom. Ein Gebiet legt in den `options` seiner Karte fest,
+von welcher Wildniskoordinate es sein Wetter bekommt und welches Klima gilt.
+Drinnen oder draußen wird pro Raum im Prototyp gesetzt. Beispiel:
+`world/nereid/places.py`.
+
+In der Wildnis belegt ein Ort Felder der Biom-Ebene: `x` Mauer, `o` Tor. Zu
+jedem Tor gehört ein Zugang in `world/nereid/portals.py`, der sagt, aus
+welcher Richtung man in welchen Raum kommt.
+
+Karten registrieren und Räume erzeugen (auch nach Änderungen):
+
+    evennia xyzgrid add world.nereid.places
+    evennia xyzgrid spawn
+
+Beim Serverstart werden die Wildnis angelegt und die Ausgänge der Tore zurück
+in die Wildnis abgeglichen (`WILDLANDS_WORLDS` in den Einstellungen).
+
 ## Starten und testen
 
-    pip install -r requirements.txt
+    pip install -r requirements.txt     # dazu scipy für das XYZGrid
     evennia migrate
+    evennia xyzgrid add world.nereid.places
+    evennia xyzgrid spawn
     evennia start
     evennia test --settings settings.py world.wildlands
 

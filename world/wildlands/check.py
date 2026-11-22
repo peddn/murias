@@ -11,7 +11,7 @@ import sys
 from collections import Counter, deque
 
 from .maps import EMPTY
-from .world import BLOCKED, CLIMB, SWIM, WALK, get_world
+from .world import BLOCKED, CLIMB, STEPS, SWIM, WALK, get_world
 
 
 def check_world(world):
@@ -39,6 +39,30 @@ def check_world(world):
             for layer in ("height", "region", "overlay"):
                 if maps.get(layer, coordinates) != EMPTY:
                     problems.append(f"{coordinates}: Eintrag in '{layer}', aber kein Biom.")
+
+    # Zugänge: jedes Tor braucht einen Eintrag und umgekehrt
+    for coordinates in maps.iter_coordinates():
+        biome = world.get_biome(coordinates)
+        if biome and biome.is_portal and not world.get_portal(coordinates):
+            problems.append(f"{coordinates}: '{biome.name}' ohne Eintrag in den Zugängen.")
+    for coordinates, portal in world.portals.items():
+        biome = world.get_biome(coordinates)
+        if not biome or not biome.is_portal:
+            problems.append(f"{coordinates}: Zugang '{portal.name}' liegt nicht auf einem Tor-Feld.")
+        if not portal.targets:
+            problems.append(f"{coordinates}: Zugang '{portal.name}' führt nirgendwohin.")
+        for direction in portal.targets:
+            dx, dy = STEPS.get(direction, (None, None))
+            if dx is None:
+                problems.append(f"{coordinates}: unbekannte Richtung '{direction}'.")
+                continue
+            x, y = coordinates
+            outside = (x - dx, y - dy)
+            if world.get_movement(outside) != WALK or world.get_portal(outside):
+                problems.append(
+                    f"{coordinates}: Zugang '{portal.name}' ist von {outside} aus nicht zu Fuß"
+                    " erreichbar."
+                )
 
     # Zusammenhang: alle betretbaren Felder sollten von einem aus erreichbar sein
     valid = {coords for coords in maps.iter_coordinates() if world.is_valid(coords)}

@@ -16,6 +16,8 @@ own cmdsets by inheriting from them or directly from `evennia.CmdSet`.
 
 from evennia import default_cmds
 
+from evennia.contrib.grid.xyzgrid.commands import XYZGridCmdSet
+
 from world.wildlands.commands import WildlandsCmdSet
 
 
@@ -36,6 +38,7 @@ class CharacterCmdSet(default_cmds.CharacterCmdSet):
         #
         # any commands you add below will overload the default ones.
         #
+        self.add(XYZGridCmdSet)
         self.add(WildlandsCmdSet)
 
 

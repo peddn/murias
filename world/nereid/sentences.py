@@ -17,6 +17,7 @@ Schlüssel für Bedingungen:
     tageszeit     nacht, morgen, tag, abend
     jahreszeit    winter, fruehling, sommer, herbst
     biom          grass, forest, beach, swamp, rock, lake
+                  in Orten die Art des Raumes: strasse, platz, hof, garten
     band          tief, mittel, hoch, alpin
 
 Platzhalter: {woher} = Richtung, aus der das Wetter kommt.
@@ -27,6 +28,7 @@ from world.wildlands.sentences import S
 
 RUHIG = ("still", "brise")
 STARK = ("boeig", "sturm")
+ORT = ("strasse", "platz", "hof")
 HELL = ("morgen", "tag", "abend")
 
 SENTENCES = (
@@ -113,7 +115,23 @@ SENTENCES = (
     S("niederschlag", "Regen rinnt in kleinen Bächen den Fels hinab und macht jeden Griff glatt.",
       niederschlag=("regen", "wolkenbruch"), wind=RUHIG, biom="rock"),
 
+    # Orte
+    S("niederschlag", "Regen rinnt von den Dächern und sammelt sich in der Gosse.",
+      "Der Regen trommelt auf Dächer und Pflaster.",
+      niederschlag=("regen", "wolkenbruch"), wind=RUHIG, biom=ORT),
+    S("niederschlag", "Der Wind treibt den Regen in Böen durch die Gassen.",
+      niederschlag=("regen", "wolkenbruch"), wind=STARK, biom=ORT),
+    S("niederschlag", "Schnee fällt auf Dächer und Pflaster und dämpft jeden Laut.",
+      niederschlag=("schnee", "starkschnee"), wind=RUHIG, biom=ORT),
+
     # ------------------------------------------------------------------ Wind
+    S("wind", "Ein leichter Luftzug weht durch die Gassen.",
+      "",
+      niederschlag="kein", wind="brise", biom=ORT),
+    S("wind", "Der Wind pfeift um die Hausecken und lässt die Fensterläden klappern.",
+      niederschlag="kein", wind=STARK, biom=ORT),
+    S("wind", "Der Wind fährt durch die Beete und biegt die Stauden.",
+      niederschlag="kein", wind=("brise", "boeig", "sturm"), biom="garten"),
     S("wind", "Ein leichter Wind streicht über das Land.",
       "",
       niederschlag="kein", wind="brise"),
@@ -162,6 +180,15 @@ SENTENCES = (
       boden="schnee", niederschlag="kein"),
     S("boden", "Die Äste biegen sich unter der Schneelast.",
       boden="schnee", niederschlag="kein", biom="forest"),
+
+    S("boden", "Das Pflaster glänzt nass.",
+      "In den Fugen des Pflasters steht noch das Wasser.",
+      boden="nass", niederschlag="kein", biom=ORT),
+    S("boden", "Schnee liegt auf Dächern und Simsen, auf dem Pflaster ist er zu Matsch"
+      " getreten.",
+      boden="schnee", niederschlag="kein", biom=ORT),
+    S("boden", "Die Erde in den Beeten ist dunkel und feucht.",
+      boden="nass", niederschlag="kein", biom="garten"),
 
     # ----------------------------------------------------------------- Trend
     S("trend", "Im {woher} türmt sich eine dunkle Wolkenwand auf.",
